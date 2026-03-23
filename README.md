@@ -38,17 +38,29 @@ Deterministic, stateless Task App node that cleans valid JSON API responses by r
 - `GET /support` -> support email
 - `GET /.well-known/openai-apps-challenge` -> static token
 - `GET /mcp` -> tool manifest
-- `POST /mcp` -> JSON-RPC (`tools/list`, `tools/call`)
+- `POST /mcp` -> JSON-RPC (`initialize`, `ping`, `tools/list`, `tools/call`)
 
 ## Run
 
 ```bash
-python3 server.py
+uvicorn app_main:app --host 0.0.0.0 --port 10000
 ```
 
-Server listens on `0.0.0.0:8000`.
+Render entrypoint: `app_main:app` on port `10000`.
 
 ## Tool Contract
+
+### initialize
+
+`initialize` returns:
+
+- `protocolVersion: "2025-03-26"`
+- `capabilities: {"tools": {}}`
+- `serverInfo: {"name": "clean-api-response-app", "version": "1.0.0"}`
+
+### ping
+
+`ping` returns an empty result object (`{}`).
 
 ### tools/list
 

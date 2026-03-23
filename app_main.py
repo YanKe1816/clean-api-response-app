@@ -141,6 +141,34 @@ async def post_mcp(request: Request) -> JSONResponse:
     method = payload.get("method")
     request_id = payload.get("id")
 
+
+    if method == "initialize":
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {
+                        "tools": {}
+                    },
+                    "serverInfo": {
+                        "name": APP_NAME,
+                        "version": APP_VERSION,
+                    },
+                },
+            }
+        )
+
+    if method == "ping":
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {},
+            }
+        )
+
     if method == "tools/list":
         return JSONResponse(
             content={

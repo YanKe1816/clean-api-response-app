@@ -2,25 +2,30 @@
 
 ## Generated Files
 
-- `server.py`
+- `app_main.py`
 - `README.md`
 - `DELIVERY_REPORT.md`
 
-## Build Summary
+## Fix Summary
 
-Implemented a deterministic, stateless Task App named **clean-api-response-app** that exposes required HTTP routes and an MCP-compatible JSON-RPC endpoint with one fixed tool: **Clean API Response for Use**.
+Added a new deployment entrypoint file `app_main.py` containing the full FastAPI app and preserved MCP task logic. Deployment target is now `app_main:app`.
 
-## Requirement Coverage
+## Deployment Entrypoint
 
-- Deterministic: no randomness, pure recursive cleaning logic.
-- Stateless: no persistence, cache, or session state.
-- No side effects: no external calls, file writes, or mutation of input payload.
-- Single tool contract: `tools/list` and `tools/call` only.
-- `tools/call` success result shape:
-  - `{"structuredContent": {"before": ..., "after": ...}}`
-- Error shape on invalid input:
-  - `{"error":{"code":"INVALID_INPUT","message":"Invalid or missing data field"}}`
-- Required routes implemented:
+- Use:
+  - `uvicorn app_main:app --host 0.0.0.0 --port 10000`
+- Do not use `server.py` for deployment.
+
+## Logic and Route Preservation
+
+- Added MCP initialization methods:
+  - `initialize` returns protocol version, capabilities, and server info
+  - `ping` returns an empty result object
+- Preserved functions:
+  - `clean_value`
+  - `handle_tool_call`
+  - `manifest`
+- Preserved routes:
   - `GET /health`
   - `GET /privacy`
   - `GET /terms`
@@ -29,18 +34,17 @@ Implemented a deterministic, stateless Task App named **clean-api-response-app**
   - `GET /mcp`
   - `POST /mcp`
 
-## Self-Test Evidence
+## Self-Checks
 
-1. Syntax and module check:
-   - `python3 -m py_compile server.py`
-2. Deterministic logic test with provided sample:
-   - Imported `handle_tool_call` and asserted exact expected output.
-3. Runtime endpoint checks with live server:
-   - `GET /health` returned `{"status":"ok"}`
-   - `GET /privacy` returned `no data stored`
-   - `GET /mcp` returned manifest with one fixed tool
-   - `POST /mcp` `tools/call` returned exact `structuredContent.before/after` contract
+1. `python3 -m py_compile app_main.py`
+2. `python3 -c "import app_main; assert hasattr(app_main, 'app')"`
+3. `python3 - <<'PY'
+from app_main import APP_NAME, APP_VERSION
+assert APP_NAME == "clean-api-response-app"
+assert APP_VERSION == "1.0.0"
+print("metadata-ok")
+PY`
 
 ## Stability Result
 
-All checks passed. Output is stable and deterministic across repeated runs for identical input.
+`app_main.py` now contains a single FastAPI app export named `app` for `app_main:app`.
