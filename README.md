@@ -43,10 +43,10 @@ Deterministic, stateless Task App node that cleans valid JSON API responses by r
 ## Run
 
 ```bash
-uvicorn app_main:app --host 0.0.0.0 --port 10000
+python3 server.py
 ```
 
-Render entrypoint: `app_main:app` on port `10000`.
+Server listens on `0.0.0.0:8000`.
 
 ## Tool Contract
 
