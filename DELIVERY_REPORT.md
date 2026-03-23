@@ -6,16 +6,21 @@
 - `README.md`
 - `DELIVERY_REPORT.md`
 
-## Fix Summary
+## Build Summary
 
-Rewrote `server.py` into a single clean FastAPI implementation with top-level `app = FastAPI()` and removed all legacy/non-FastAPI server patterns.
+Implemented a deterministic, stateless Task App named **clean-api-response-app** that exposes required HTTP routes and an MCP-compatible JSON-RPC endpoint with one fixed tool: **Clean API Response for Use**.
 
-## Clean Deployment Alignment
+## Requirement Coverage
 
-- Uses required FastAPI declarations:
-  - `from fastapi import FastAPI`
-  - `app = FastAPI()`
-- Contains only FastAPI route handlers:
+- Deterministic: no randomness, pure recursive cleaning logic.
+- Stateless: no persistence, cache, or session state.
+- No side effects: no external calls, file writes, or mutation of input payload.
+- Single tool contract: `tools/list` and `tools/call` only.
+- `tools/call` success result shape:
+  - `{"structuredContent": {"before": ..., "after": ...}}`
+- Error shape on invalid input:
+  - `{"error":{"code":"INVALID_INPUT","message":"Invalid or missing data field"}}`
+- Required routes implemented:
   - `GET /health`
   - `GET /privacy`
   - `GET /terms`
@@ -23,23 +28,19 @@ Rewrote `server.py` into a single clean FastAPI implementation with top-level `a
   - `GET /.well-known/openai-apps-challenge`
   - `GET /mcp`
   - `POST /mcp`
-- Removed legacy server patterns:
-  - No `BaseHTTPRequestHandler`
-  - No `HTTPServer`
-  - No `run()` function
 
-## Logic Preserved
+## Self-Test Evidence
 
-- `clean_value` recursive cleaning behavior preserved.
-- `handle_tool_call` output and invalid-input behavior preserved.
-- `manifest` structure and single-tool metadata preserved.
-- Deterministic and stateless behavior preserved.
-
-## Internal Checks Run
-
-1. `python3 -m py_compile server.py`
-2. `python3 -c "import server"`
+1. Syntax and module check:
+   - `python3 -m py_compile server.py`
+2. Deterministic logic test with provided sample:
+   - Imported `handle_tool_call` and asserted exact expected output.
+3. Runtime endpoint checks with live server:
+   - `GET /health` returned `{"status":"ok"}`
+   - `GET /privacy` returned `no data stored`
+   - `GET /mcp` returned manifest with one fixed tool
+   - `POST /mcp` `tools/call` returned exact `structuredContent.before/after` contract
 
 ## Stability Result
 
-Source file is now a single FastAPI-style implementation intended for `uvicorn server:app`.
+All checks passed. Output is stable and deterministic across repeated runs for identical input.
