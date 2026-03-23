@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from typing import Any, Awaitable, Callable, Dict, List, Tuple
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any, Dict, Optional, Tuple
 
 APP_NAME = "clean-api-response-app"
 APP_VERSION = "1.0.0"
@@ -24,111 +25,6 @@ INVALID_INPUT = {
         "message": "Invalid or missing data field",
     }
 }
-
-HandlerFn = Callable[..., Any]
-
-
-class JSONResponse:
-    def __init__(self, content: Dict[str, Any], status_code: int = 200):
-        self.content = content
-        self.status_code = status_code
-
-    async def __call__(self, scope: Dict[str, Any], receive: Callable[..., Awaitable[Dict[str, Any]]], send: Callable[..., Awaitable[None]]) -> None:
-        body = json.dumps(self.content, separators=(",", ":")).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": self.status_code,
-                "headers": [[b"content-type", b"application/json"], [b"content-length", str(len(body)).encode("ascii")]],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-
-
-class PlainTextResponse:
-    def __init__(self, content: str, status_code: int = 200):
-        self.content = content
-        self.status_code = status_code
-
-    async def __call__(self, scope: Dict[str, Any], receive: Callable[..., Awaitable[Dict[str, Any]]], send: Callable[..., Awaitable[None]]) -> None:
-        body = self.content.encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": self.status_code,
-                "headers": [[b"content-type", b"text/plain; charset=utf-8"], [b"content-length", str(len(body)).encode("ascii")]],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-
-
-class Request:
-    def __init__(self, scope: Dict[str, Any], receive: Callable[..., Awaitable[Dict[str, Any]]]):
-        self.scope = scope
-        self._receive = receive
-
-    async def json(self) -> Any:
-        chunks: List[bytes] = []
-        while True:
-            message = await self._receive()
-            if message["type"] != "http.request":
-                continue
-            chunks.append(message.get("body", b""))
-            if not message.get("more_body", False):
-                break
-        raw = b"".join(chunks)
-        return json.loads(raw.decode("utf-8"))
-
-
-class FastAPI:
-    def __init__(self):
-        self.routes: Dict[Tuple[str, str], HandlerFn] = {}
-
-    def get(self, path: str) -> Callable[[HandlerFn], HandlerFn]:
-        def decorator(fn: HandlerFn) -> HandlerFn:
-            self.routes[("GET", path)] = fn
-            return fn
-
-        return decorator
-
-    def post(self, path: str) -> Callable[[HandlerFn], HandlerFn]:
-        def decorator(fn: HandlerFn) -> HandlerFn:
-            self.routes[("POST", path)] = fn
-            return fn
-
-        return decorator
-
-    async def __call__(self, scope: Dict[str, Any], receive: Callable[..., Awaitable[Dict[str, Any]]], send: Callable[..., Awaitable[None]]) -> None:
-        if scope.get("type") != "http":
-            return
-
-        method = scope.get("method", "")
-        path = scope.get("path", "")
-        handler = self.routes.get((method, path))
-        if handler is None:
-            response = JSONResponse({"error": "not found"}, status_code=404)
-            await response(scope, receive, send)
-            return
-
-        if method == "POST":
-            result = handler(Request(scope, receive))
-        else:
-            result = handler()
-
-        if hasattr(result, "__await__"):
-            result = await result
-
-        if isinstance(result, (JSONResponse, PlainTextResponse)):
-            response = result
-        elif isinstance(result, str):
-            response = PlainTextResponse(result)
-        else:
-            response = JSONResponse(result)
-
-        await response(scope, receive, send)
-
-
-app = FastAPI()
 
 
 def _is_empty_value(value: Any) -> bool:
@@ -204,79 +100,120 @@ def manifest() -> Dict[str, Any]:
     }
 
 
-@app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+class Handler(BaseHTTPRequestHandler):
+    server_version = "CleanAPIResponseApp/1.0"
 
+    def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
-@app.get("/privacy")
-def privacy() -> PlainTextResponse:
-    return PlainTextResponse("no data stored")
+    def _send_text(self, status: int, text: str) -> None:
+        body = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
+    def _read_json(self) -> Optional[Dict[str, Any]]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None
+        raw = self.rfile.read(length)
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
-@app.get("/terms")
-def terms() -> PlainTextResponse:
-    return PlainTextResponse("Use only with valid JSON input containing a data field.")
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/health":
+            self._send_json(200, {"status": "ok"})
+            return
 
+        if self.path == "/privacy":
+            self._send_text(200, "no data stored")
+            return
 
-@app.get("/support")
-def support() -> PlainTextResponse:
-    return PlainTextResponse(SUPPORT_EMAIL)
+        if self.path == "/terms":
+            self._send_text(200, "Use only with valid JSON input containing a data field.")
+            return
 
+        if self.path == "/support":
+            self._send_text(200, SUPPORT_EMAIL)
+            return
 
-@app.get("/.well-known/openai-apps-challenge")
-def challenge() -> PlainTextResponse:
-    return PlainTextResponse(CHALLENGE_TOKEN)
+        if self.path == "/.well-known/openai-apps-challenge":
+            self._send_text(200, CHALLENGE_TOKEN)
+            return
 
+        if self.path == "/mcp":
+            self._send_json(200, manifest())
+            return
 
-@app.get("/mcp")
-def get_mcp() -> Dict[str, Any]:
-    return manifest()
+        self._send_json(404, {"error": "not found"})
 
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/mcp":
+            self._send_json(404, {"error": "not found"})
+            return
 
-@app.post("/mcp")
-async def post_mcp(request: Request) -> JSONResponse:
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse(status_code=400, content=INVALID_INPUT)
+        request = self._read_json()
+        if request is None:
+            self._send_json(400, INVALID_INPUT)
+            return
 
-    if not isinstance(payload, dict):
-        return JSONResponse(status_code=400, content=INVALID_INPUT)
+        method = request.get("method")
+        request_id = request.get("id")
 
-    method = payload.get("method")
-    request_id = payload.get("id")
-
-    if method == "tools/list":
-        return JSONResponse(
-            content={
+        if method == "tools/list":
+            response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": {"tools": manifest()["tools"]},
+                "result": {
+                    "tools": manifest()["tools"],
+                },
             }
-        )
+            self._send_json(200, response)
+            return
 
-    if method == "tools/call":
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            result = INVALID_INPUT
-        else:
-            name = params.get("name")
-            arguments = params.get("arguments")
-            result = handle_tool_call(arguments) if name == TOOL_NAME else INVALID_INPUT
+        if method == "tools/call":
+            params = request.get("params")
+            if not isinstance(params, dict):
+                result = INVALID_INPUT
+            else:
+                name = params.get("name")
+                arguments = params.get("arguments")
+                if name != TOOL_NAME:
+                    result = INVALID_INPUT
+                else:
+                    result = handle_tool_call(arguments)
 
-        return JSONResponse(
-            content={
+            response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": result,
             }
-        )
+            self._send_json(200, response)
+            return
 
-    return JSONResponse(
-        content={
+        response = {
             "jsonrpc": "2.0",
             "id": request_id,
             "result": INVALID_INPUT,
         }
-    )
+        self._send_json(200, response)
+
+
+def run() -> None:
+    server = HTTPServer(("0.0.0.0", 8000), Handler)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    run()
