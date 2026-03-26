@@ -11,10 +11,11 @@ CHALLENGE_TOKEN = os.environ.get("OPENAI_APPS_CHALLENGE", "clean-api-response-ap
 
 TOOL_NAME = "clean_api_response"
 TOOL_DESCRIPTION = (
-    "Use this tool when API response data contains null, empty, or unnecessary "
-    "fields, and needs to be cleaned into usable JSON."
+    "Clean API response by removing null, empty, and unnecessary fields."
 )
 
+
+# ========= 核心逻辑 =========
 
 def is_empty(value):
     return value is None or value == "" or value == {} or value == []
@@ -44,194 +45,129 @@ def clean_value(value):
 
 
 def run_tool(input_json_string):
-    if not isinstance(input_json_string, str):
-        return {"error": "Invalid JSON input"}
-
     try:
         data = json.loads(input_json_string)
-    except json.JSONDecodeError:
+    except Exception:
         return {"error": "Invalid JSON input"}
 
-    cleaned, keep = clean_value(data)
-    if not keep:
-        if isinstance(data, dict):
-            cleaned = {}
-        elif isinstance(data, list):
-            cleaned = []
-        else:
-            cleaned = data
-
-    return {
-        "content": [],
-        "structuredContent": {
-            "output": cleaned
-        }
-    }
+    cleaned, _ = clean_value(data)
+    return cleaned
 
 
 def manifest_tool():
     return {
-        "name": TOOL_NAME,
-        "description": TOOL_DESCRIPTION,
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "input": {"type": "string"}
-            },
-            "required": ["input"],
-            "additionalProperties": False
-        }
+        "tools": [
+            {
+                "name": TOOL_NAME,
+                "description": TOOL_DESCRIPTION,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "json": {"type": "string"}
+                    },
+                    "required": ["json"]
+                }
+            }
+        ]
     }
 
 
+# ========= HTTP Handler =========
+
 class Handler(BaseHTTPRequestHandler):
-    def send_json(self, payload, status=200):
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        self.send_response(status)
+
+    def _send_json(self, data):
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def send_text(self, text, status=200):
-        body = text.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def read_json(self):
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            return None
-
-        raw = self.rfile.read(length)
-        try:
-            value = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return None
-
-        return value if isinstance(value, dict) else None
-
     def do_GET(self):
         if self.path == "/health":
-            self.send_json({"status": "ok"})
+            self._send_json({"status": "ok"})
             return
 
         if self.path == "/privacy":
-            self.send_text(
-                "Privacy Policy\n\n"
-                "This service processes submitted JSON in memory only. "
-                "It does not store API payloads, user content, or cleaned results "
-                "after the response is returned. No analytics or tracking data is retained."
-            )
+            self._send_json({"message": "No data stored"})
             return
 
         if self.path == "/terms":
-            self.send_text(
-                "Terms of Use\n\n"
-                "This service removes null and empty values from valid JSON input. "
-                "You are responsible for reviewing the cleaned output before using it "
-                "in any workflow, product, or production system."
-            )
+            self._send_json({"message": "Use at your own risk"})
             return
 
         if self.path == "/support":
-            self.send_text(
-                "Support\n\n"
-                f"For help with {APP_NAME}, contact {SUPPORT_EMAIL}."
-            )
+            self._send_json({"email": SUPPORT_EMAIL})
             return
 
         if self.path == "/.well-known/openai-apps-challenge":
-            self.send_text(CHALLENGE_TOKEN)
+            self._send_json({"challenge": CHALLENGE_TOKEN})
             return
 
-        self.send_json({"error": "not found"}, status=404)
+        self.send_response(404)
+        self.end_headers()
 
     def do_POST(self):
         if self.path != "/mcp":
-            self.send_json({"error": "not found"}, status=404)
+            self.send_response(404)
+            self.end_headers()
             return
 
-        req = self.read_json()
-        if req is None:
-            self.send_json({"error": "Invalid JSON input"}, status=400)
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+
+        try:
+            request = json.loads(body)
+        except Exception:
+            self._send_json({"error": "Invalid JSON"})
             return
 
-        request_id = req.get("id")
-        method = req.get("method")
-        params = req.get("params")
+        method = request.get("method")
+        request_id = request.get("id")
 
-        if method == "initialize":
-            self.send_json({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {
-                        "name": APP_NAME,
-                        "version": APP_VERSION
-                    }
-                }
-            })
-            return
-
-        if method == "notifications/initialized":
-            self.send_json({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {}
-            })
-            return
-
+        # tools/list
         if method == "tools/list":
-            self.send_json({
+            response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": {
-                    "tools": [manifest_tool()]
-                }
-            })
+                "result": manifest_tool()
+            }
+            self._send_json(response)
             return
 
+        # tools/call
         if method == "tools/call":
-            if not isinstance(params, dict):
-                result = {"error": "Invalid JSON input"}
-            else:
-                name = params.get("name")
-                arguments = params.get("arguments")
+            params = request.get("params", {})
+            arguments = params.get("arguments", {})
+            json_input = arguments.get("json", "")
 
-                if name != TOOL_NAME or not isinstance(arguments, dict):
-                    result = {"error": "Invalid JSON input"}
-                else:
-                    result = run_tool(arguments.get("input"))
+            result = run_tool(json_input)
 
-            self.send_json({
+            response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": result
-            })
+            }
+            self._send_json(response)
             return
 
-        if method == "ping":
-            self.send_json({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {}
-            })
-            return
-
-        self.send_json({
+        # fallback
+        self._send_json({
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": {"error": "Invalid JSON input"}
+            "error": {"code": -32601, "message": "Method not found"}
         })
 
 
-if __name__ == "__main__":
+# ========= 启动 =========
+
+def run():
     port = int(os.environ.get("PORT", "8000"))
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    print(f"Server running on port {port}")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    run()
