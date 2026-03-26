@@ -1,109 +1,91 @@
 #!/usr/bin/env python3
-"""clean-api-response-app: deterministic MCP-style task app."""
-
-from __future__ import annotations
 
 import json
-from copy import deepcopy
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, Optional, Tuple
 
 APP_NAME = "clean-api-response-app"
 APP_VERSION = "1.0.0"
-SUPPORT_EMAIL = "your@email.com"
-CHALLENGE_TOKEN = "clean-api-response-app-token"
+SUPPORT_EMAIL = "sidcraigau@gmail.com"
+CHALLENGE_TOKEN = os.environ.get("OPENAI_APPS_CHALLENGE", "clean-api-response-app-token")
 
-TOOL_NAME = "Clean API Response for Use"
+TOOL_NAME = "clean_api_response"
 TOOL_DESCRIPTION = (
-    "Use this when API response data contains null, empty, or unnecessary "
-    "fields and needs to be cleaned into usable JSON."
+    "Use this tool when API response data contains null, empty, or unnecessary "
+    "fields, and needs to be cleaned into usable JSON."
 )
 
-INVALID_INPUT = {
-    "error": {
-        "code": "INVALID_INPUT",
-        "message": "Invalid or missing data field",
-    }
-}
 
-
-def _is_empty_value(value: Any) -> bool:
+def is_empty(value):
     return value is None or value == "" or value == {} or value == []
 
 
-def clean_value(value: Any) -> Tuple[Any, bool]:
-    """Recursively remove null/empty values from JSON-like structures.
-
-    Returns (cleaned_value, keep_flag) where keep_flag determines whether the
-    cleaned_value should remain in the parent structure.
-    """
+def clean_value(value):
     if isinstance(value, dict):
-        cleaned: Dict[str, Any] = {}
-        for key, child in value.items():
-            cleaned_child, keep = clean_value(child)
+        out = {}
+        for k, v in value.items():
+            cleaned, keep = clean_value(v)
             if keep:
-                cleaned[key] = cleaned_child
-        return cleaned, not _is_empty_value(cleaned)
+                out[k] = cleaned
+        return out, not is_empty(out)
 
     if isinstance(value, list):
-        cleaned_list = []
+        out = []
         for item in value:
-            cleaned_item, keep = clean_value(item)
+            cleaned, keep = clean_value(item)
             if keep:
-                cleaned_list.append(cleaned_item)
-        return cleaned_list, not _is_empty_value(cleaned_list)
+                out.append(cleaned)
+        return out, not is_empty(out)
 
-    if _is_empty_value(value):
+    if is_empty(value):
         return value, False
 
     return value, True
 
 
-def handle_tool_call(arguments: Any) -> Dict[str, Any]:
-    if not isinstance(arguments, dict) or "data" not in arguments:
-        return INVALID_INPUT
+def run_tool(input_json_string):
+    if not isinstance(input_json_string, str):
+        return {"error": "Invalid JSON input"}
 
-    before = arguments["data"]
-    after, keep = clean_value(before)
+    try:
+        data = json.loads(input_json_string)
+    except json.JSONDecodeError:
+        return {"error": "Invalid JSON input"}
+
+    cleaned, keep = clean_value(data)
     if not keep:
-        after = {} if isinstance(before, dict) else [] if isinstance(before, list) else before
+        if isinstance(data, dict):
+            cleaned = {}
+        elif isinstance(data, list):
+            cleaned = []
+        else:
+            cleaned = data
 
     return {
+        "content": [],
         "structuredContent": {
-            "before": deepcopy(before),
-            "after": after,
+            "output": cleaned
         }
     }
 
 
-def manifest() -> Dict[str, Any]:
+def manifest_tool():
     return {
-        "name": APP_NAME,
-        "version": APP_VERSION,
-        "tools": [
-            {
-                "name": TOOL_NAME,
-                "description": TOOL_DESCRIPTION,
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "data": {"type": "object"}
-                    },
-                    "required": ["data"],
-                    "additionalProperties": False,
-                },
-                "annotations": {
-                    "readOnlyHint": True,
-                },
-            }
-        ],
+        "name": TOOL_NAME,
+        "description": TOOL_DESCRIPTION,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "input": {"type": "string"}
+            },
+            "required": ["input"],
+            "additionalProperties": False
+        }
     }
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "CleanAPIResponseApp/1.0"
-
-    def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
+    def send_json(self, payload, status=200):
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -111,7 +93,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_text(self, status: int, text: str) -> None:
+    def send_text(self, text, status=200):
         body = text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -119,101 +101,137 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self) -> Optional[Dict[str, Any]]:
+    def read_json(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             return None
+
         raw = self.rfile.read(length)
         try:
-            parsed = json.loads(raw.decode("utf-8"))
+            value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
-        return parsed if isinstance(parsed, dict) else None
 
-    def do_GET(self) -> None:  # noqa: N802
+        return value if isinstance(value, dict) else None
+
+    def do_GET(self):
         if self.path == "/health":
-            self._send_json(200, {"status": "ok"})
+            self.send_json({"status": "ok"})
             return
 
         if self.path == "/privacy":
-            self._send_text(200, "no data stored")
+            self.send_text(
+                "Privacy Policy\n\n"
+                "This service processes submitted JSON in memory only. "
+                "It does not store API payloads, user content, or cleaned results "
+                "after the response is returned. No analytics or tracking data is retained."
+            )
             return
 
         if self.path == "/terms":
-            self._send_text(200, "Use only with valid JSON input containing a data field.")
+            self.send_text(
+                "Terms of Use\n\n"
+                "This service removes null and empty values from valid JSON input. "
+                "You are responsible for reviewing the cleaned output before using it "
+                "in any workflow, product, or production system."
+            )
             return
 
         if self.path == "/support":
-            self._send_text(200, SUPPORT_EMAIL)
+            self.send_text(
+                "Support\n\n"
+                f"For help with {APP_NAME}, contact {SUPPORT_EMAIL}."
+            )
             return
 
         if self.path == "/.well-known/openai-apps-challenge":
-            self._send_text(200, CHALLENGE_TOKEN)
+            self.send_text(CHALLENGE_TOKEN)
             return
 
-        if self.path == "/mcp":
-            self._send_json(200, manifest())
-            return
+        self.send_json({"error": "not found"}, status=404)
 
-        self._send_json(404, {"error": "not found"})
-
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self):
         if self.path != "/mcp":
-            self._send_json(404, {"error": "not found"})
+            self.send_json({"error": "not found"}, status=404)
             return
 
-        request = self._read_json()
-        if request is None:
-            self._send_json(400, INVALID_INPUT)
+        req = self.read_json()
+        if req is None:
+            self.send_json({"error": "Invalid JSON input"}, status=400)
             return
 
-        method = request.get("method")
-        request_id = request.get("id")
+        request_id = req.get("id")
+        method = req.get("method")
+        params = req.get("params")
 
-        if method == "tools/list":
-            response = {
+        if method == "initialize":
+            self.send_json({
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "tools": manifest()["tools"],
-                },
-            }
-            self._send_json(200, response)
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {
+                        "name": APP_NAME,
+                        "version": APP_VERSION
+                    }
+                }
+            })
+            return
+
+        if method == "notifications/initialized":
+            self.send_json({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {}
+            })
+            return
+
+        if method == "tools/list":
+            self.send_json({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "tools": [manifest_tool()]
+                }
+            })
             return
 
         if method == "tools/call":
-            params = request.get("params")
             if not isinstance(params, dict):
-                result = INVALID_INPUT
+                result = {"error": "Invalid JSON input"}
             else:
                 name = params.get("name")
                 arguments = params.get("arguments")
-                if name != TOOL_NAME:
-                    result = INVALID_INPUT
-                else:
-                    result = handle_tool_call(arguments)
 
-            response = {
+                if name != TOOL_NAME or not isinstance(arguments, dict):
+                    result = {"error": "Invalid JSON input"}
+                else:
+                    result = run_tool(arguments.get("input"))
+
+            self.send_json({
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": result,
-            }
-            self._send_json(200, response)
+                "result": result
+            })
             return
 
-        response = {
+        if method == "ping":
+            self.send_json({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {}
+            })
+            return
+
+        self.send_json({
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": INVALID_INPUT,
-        }
-        self._send_json(200, response)
-
-
-def run() -> None:
-    server = HTTPServer(("0.0.0.0", 8000), Handler)
-    server.serve_forever()
+            "result": {"error": "Invalid JSON input"}
+        })
 
 
 if __name__ == "__main__":
-    run()
+    port = int(os.environ.get("PORT", "8000"))
+    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
